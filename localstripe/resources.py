@@ -2498,6 +2498,139 @@ class Plan(StripeObject):
         return li
 
 
+class Price(StripeObject):
+    """Prices API (introduced 2020) — wraps Plan with the modern field names.
+
+    In the real Stripe API, a Price is a superset of a Plan. Every Plan is
+    also accessible as a Price, and new code should use the Prices API.
+
+    This implementation stores Prices in the same backing store as Plans
+    (``object = 'plan'``) so that Plans and Prices are interchangeable:
+    creating a Price also makes it visible via ``/v1/plans`` and vice versa.
+
+    Fields specific to the Prices API that do not exist on Plan:
+    - ``unit_amount`` (alias for ``amount``)
+    - ``recurring`` (object with ``interval``, ``interval_count``, etc.)
+    - ``type`` (always ``"recurring"`` for now; ``"one_time"`` not implemented)
+
+    The ``_export`` override re-maps fields to the Prices API shape so that
+    ``GET /v1/prices/<id>`` returns the expected JSON.
+    """
+
+    object = 'price'
+    _id_prefix = 'price_'
+
+    def __init__(self, id=None, product=None, currency=None,
+                 unit_amount=None, recurring=None, nickname=None,
+                 active=True, metadata=None, billing_scheme='per_unit',
+                 tiers=None, tiers_mode=None, lookup_key=None,
+                 **kwargs):
+        if kwargs:
+            raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+
+        unit_amount = try_convert_to_int(unit_amount)
+        active = try_convert_to_bool(active)
+
+        try:
+            assert id is None or type(id) is str and id
+            assert type(product) is str and product
+            assert type(currency) is str and currency
+            assert type(active) is bool
+            if billing_scheme == 'per_unit':
+                assert type(unit_amount) is int and unit_amount >= 0
+            if recurring is not None:
+                assert type(recurring) is dict
+                assert 'interval' in recurring
+                assert recurring['interval'] in (
+                    'day', 'week', 'month', 'year')
+            if nickname is not None:
+                assert type(nickname) is str
+        except AssertionError:
+            raise UserError(400, 'Bad request')
+
+        Product._api_retrieve(product)  # return 404 if not existent
+
+        interval = recurring['interval'] if recurring else 'month'
+        interval_count = try_convert_to_int(
+            recurring.get('interval_count', 1)) if recurring else 1
+        trial_period_days = try_convert_to_int(
+            recurring.get('trial_period_days')) if recurring else None
+        usage_type = (
+            recurring.get('usage_type', 'licensed')) if recurring else (
+                'licensed')
+
+        # All exceptions must be raised before this point.
+        super().__init__(id)
+
+        self.product = product
+        self.active = active
+        self.currency = currency
+        self.unit_amount = unit_amount
+        self.nickname = nickname
+        self.billing_scheme = billing_scheme
+        self.tiers = tiers
+        self.tiers_mode = tiers_mode
+        self.lookup_key = lookup_key
+        self.metadata = metadata or {}
+        self.type = 'recurring' if recurring else 'one_time'
+
+        # Store the recurring sub-object so it appears in the export.
+        self.recurring = dict(
+            interval=interval,
+            interval_count=interval_count,
+            trial_period_days=trial_period_days,
+            usage_type=usage_type,
+        ) if recurring else None
+
+        # Also create a Plan in the store so that Plan-based lookups
+        # (e.g. SubscriptionItem) work transparently with price IDs.
+        # We reuse the same ID so /v1/plans/<price_id> resolves.
+        plan = Plan.__new__(Plan)
+        StripeObject.__init__(plan, self.id)
+        plan.metadata = self.metadata
+        plan.product = self.product
+        plan.active = self.active
+        plan.amount = self.unit_amount
+        plan.currency = self.currency
+        plan.interval = interval
+        plan.interval_count = interval_count
+        plan.trial_period_days = trial_period_days
+        plan.nickname = self.nickname
+        plan.usage_type = usage_type
+        plan.billing_scheme = self.billing_scheme
+        plan.tiers = self.tiers
+        plan.tiers_mode = self.tiers_mode
+        self._plan = plan
+
+        schedule_webhook(Event('price.created', self))
+
+    @classmethod
+    def _api_list_all(cls, url, active=None, product=None, limit=None,
+                      starting_after=None, **kwargs):
+        if kwargs:
+            raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+
+        active = try_convert_to_bool(active)
+        try:
+            if active is not None:
+                assert type(active) is bool
+            if product is not None:
+                assert type(product) is str
+        except AssertionError:
+            raise UserError(400, 'Bad request')
+
+        li = super(Price, cls)._api_list_all(
+            url, limit=limit, starting_after=starting_after
+        )
+
+        if active is not None:
+            li._list = [obj for obj in li._list if obj.active == active]
+        if product is not None:
+            li._list = [obj for obj in li._list if obj.product == product]
+
+        return li
+
+
 class Payout(StripeObject):
     object = 'payout'
     _id_prefix = 'po_'
@@ -2602,7 +2735,7 @@ class Product(StripeObject):
     def __init__(self, id=None, name=None, type='service', active=True,
                  caption=None, description=None, attributes=None,
                  shippable=True, url=None, statement_descriptor=None,
-                 metadata=None, **kwargs):
+                 metadata=None, default_price=None, **kwargs):
         if kwargs:
             raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
 
@@ -2624,6 +2757,8 @@ class Product(StripeObject):
             if statement_descriptor is not None:
                 assert _type(statement_descriptor) is str
                 assert len(statement_descriptor) <= 22
+            if default_price is not None:
+                assert _type(default_price) is str
         except AssertionError:
             raise UserError(400, 'Bad request')
 
@@ -2640,6 +2775,7 @@ class Product(StripeObject):
         self.url = url
         self.statement_descriptor = statement_descriptor
         self.metadata = metadata or {}
+        self.default_price = default_price
 
         schedule_webhook(Event('product.created', self))
 
@@ -2997,6 +3133,11 @@ class Subscription(StripeObject):
                 assert proration_behavior in ['create_prorations', 'none']
             assert type(items) is list
             for item in items:
+                # Accept ``price`` as an alias for ``plan`` (Prices API).
+                if 'price' in item and 'plan' not in item:
+                    item['plan'] = item.pop('price')
+                elif 'price' in item:
+                    item['plan'] = item.pop('price')
                 assert type(item.get('plan')) is str
                 if item.get('quantity') is not None:
                     item['quantity'] = try_convert_to_int(item['quantity'])
@@ -3333,10 +3474,17 @@ class SubscriptionItem(StripeObject):
     object = 'subscription_item'
     _id_prefix = 'si_'
 
-    def __init__(self, subscription=None, plan=None, quantity=1,
+    def __init__(self, subscription=None, plan=None, price=None, quantity=1,
                  tax_rates=[], metadata=None, **kwargs):
         if kwargs:
             raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+
+        # The Prices API uses ``price`` instead of ``plan``. Accept either,
+        # preferring ``price`` when both are given (matching Stripe behavior).
+        if price is not None and plan is None:
+            plan = price
+        elif price is not None and plan is not None:
+            plan = price  # price takes precedence
 
         quantity = try_convert_to_int(quantity)
         try:
@@ -3359,6 +3507,9 @@ class SubscriptionItem(StripeObject):
         super().__init__()
 
         self.plan = plan
+        # Expose the price field for modern Stripe SDK clients that read
+        # Items.Data[0].Price.Id instead of Items.Data[0].Plan.Id.
+        self.price = plan
         self.quantity = quantity
         self.tax_rates = tax_rates
         self.metadata = metadata or {}
