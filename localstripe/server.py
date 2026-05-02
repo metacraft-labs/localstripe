@@ -23,11 +23,11 @@ import socket
 
 from aiohttp import web
 
-from .resources import Account, BalanceTransaction, Charge, Coupon, \
-    Customer, Event, Invoice, InvoiceItem, PaymentIntent, PaymentMethod, \
-    Payout, Plan, Price, Product, PromotionCode, Refund, SetupIntent, \
-    Source, Subscription, SubscriptionItem, TaxRate, Token, Transfer, \
-    extra_apis, store
+from .resources import Account, BalanceTransaction, Charge, CheckoutSession, \
+    Coupon, Customer, Event, Invoice, InvoiceItem, PaymentIntent, \
+    PaymentMethod, Payout, Plan, Price, Product, PromotionCode, Refund, \
+    SetupIntent, Source, Subscription, SubscriptionItem, TaxRate, Token, \
+    Transfer, extra_apis, store
 from .errors import UserError
 from .webhooks import register_webhook
 
@@ -277,7 +277,8 @@ for method, url, func in extra_apis:
 for cls in (Account, BalanceTransaction, Charge, Coupon, Customer, Event,
             Invoice, InvoiceItem, PaymentIntent, PaymentMethod, Payout, Plan,
             Price, Product, PromotionCode, Refund, SetupIntent, Source,
-            Subscription, SubscriptionItem, TaxRate, Token, Transfer):
+            Subscription, SubscriptionItem, TaxRate, Token, Transfer,
+            CheckoutSession):
     for method, url, func in (
             ('POST', '/v1/' + cls.object + 's', api_create),
             ('GET', '/v1/' + cls.object + 's/{id}', api_retrieve),

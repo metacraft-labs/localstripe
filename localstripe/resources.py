@@ -686,6 +686,98 @@ extra_apis.append((
     ('POST', '/v1/charges/{id}/capture', Charge._api_capture)))
 
 
+class CheckoutSession(StripeObject):
+    object = 'checkout/session'
+    _id_prefix = 'cs_test_'
+
+    def __init__(self, success_url=None, cancel_url=None, mode=None,
+                 line_items=None, client_reference_id=None,
+                 subscription_data=None, customer=None,
+                 metadata=None, **kwargs):
+        if kwargs:
+            raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+
+        try:
+            assert type(success_url) is str and success_url
+            assert type(cancel_url) is str and cancel_url
+            assert mode in ('payment', 'setup', 'subscription')
+            assert type(line_items) is list and len(line_items) > 0
+            if client_reference_id is not None:
+                assert type(client_reference_id) is str
+            if subscription_data is not None:
+                assert type(subscription_data) is dict
+            if customer is not None:
+                assert type(customer) is str and customer.startswith('cus_')
+            if metadata is not None:
+                assert type(metadata) is dict
+        except AssertionError:
+            raise UserError(400, 'Bad request')
+
+        normalized_line_items = []
+        for item in line_items:
+            try:
+                assert type(item) is dict
+                price = item.get('price')
+                quantity = try_convert_to_int(item.get('quantity', 1))
+                adjustable_quantity = item.get('adjustable_quantity')
+                assert type(price) is str and price
+                assert type(quantity) is int and quantity > 0
+                if adjustable_quantity is not None:
+                    assert type(adjustable_quantity) is dict
+                    enabled = try_convert_to_bool(
+                        adjustable_quantity.get('enabled', False))
+                    minimum = try_convert_to_int(
+                        adjustable_quantity.get('minimum', 1))
+                    maximum = try_convert_to_int(
+                        adjustable_quantity.get('maximum', 999999))
+                    assert type(enabled) is bool
+                    assert type(minimum) is int and minimum > 0
+                    assert type(maximum) is int and maximum >= minimum
+                    adjustable_quantity = {
+                        'enabled': enabled,
+                        'minimum': minimum,
+                        'maximum': maximum,
+                    }
+            except AssertionError:
+                raise UserError(400, 'Bad request')
+
+            price_obj = Price._api_retrieve(price)
+            normalized_line_items.append({
+                'object': 'item',
+                'price': price_obj._export(),
+                'quantity': quantity,
+                'adjustable_quantity': adjustable_quantity,
+            })
+
+        if customer is not None:
+            Customer._api_retrieve(customer)
+
+        # All exceptions must be raised before this point.
+        super().__init__()
+
+        self.success_url = success_url
+        self.cancel_url = cancel_url
+        self.mode = mode
+        self.client_reference_id = client_reference_id
+        self.customer = customer
+        self.metadata = metadata or {}
+        self.subscription_data = subscription_data or {}
+        self.payment_status = 'unpaid'
+        self.status = 'open'
+        self.url = 'https://checkout.localstripe.test/pay/' + self.id
+        self.line_items = {
+            'object': 'list',
+            'url': '/v1/checkout/sessions/' + self.id + '/line_items',
+            'has_more': False,
+            'data': normalized_line_items,
+        }
+
+    def _export(self, expand=None):
+        obj = super()._export(expand=expand)
+        obj['object'] = 'checkout.session'
+        return obj
+
+
 class Coupon(StripeObject):
     object = 'coupon'
 
