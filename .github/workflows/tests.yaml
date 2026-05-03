@@ -37,10 +37,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.pyver }}
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.pyver }}
+          python-version: ${{ matrix.python-version }}
       - run: pip install 'pip >=23' build
       - run: python -m build
       - run: pip install dist/localstripe-*.tar.gz
