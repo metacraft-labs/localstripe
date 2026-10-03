@@ -23,7 +23,8 @@ import socket
 
 from aiohttp import web
 
-from .resources import Account, BalanceTransaction, Charge, CheckoutSession, \
+from .resources import Account, BalanceTransaction, BillingPortalSession, \
+    Charge, CheckoutSession, \
     Coupon, Customer, Event, Invoice, InvoiceItem, PaymentIntent, \
     PaymentMethod, Payout, Plan, Price, Product, PromotionCode, Refund, \
     SetupIntent, Source, Subscription, SubscriptionItem, TaxRate, Token, \
@@ -278,7 +279,7 @@ for cls in (Account, BalanceTransaction, Charge, Coupon, Customer, Event,
             Invoice, InvoiceItem, PaymentIntent, PaymentMethod, Payout, Plan,
             Price, Product, PromotionCode, Refund, SetupIntent, Source,
             Subscription, SubscriptionItem, TaxRate, Token, Transfer,
-            CheckoutSession):
+            CheckoutSession, BillingPortalSession):
     for method, url, func in (
             ('POST', '/v1/' + cls.object + 's', api_create),
             ('GET', '/v1/' + cls.object + 's/{id}', api_retrieve),

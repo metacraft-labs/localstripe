@@ -778,6 +778,60 @@ class CheckoutSession(StripeObject):
         return obj
 
 
+class BillingPortalSession(StripeObject):
+    """A Customer Portal session (POST /v1/billing_portal/sessions).
+
+    Stripe answers with a short-lived `url` to its hosted portal. Locally the
+    hosted page does not exist (it is in the seam register of the local
+    billing stack), so the session records what was asked for and carries a
+    `billing.localstripe.test` URL that a test can assert on. Stripe has no
+    list endpoint for these sessions; the generic one localstripe registers
+    for every object is what lets a test prove that a refused request created
+    none.
+    """
+    object = 'billing_portal/session'
+    _id_prefix = 'bps_'
+
+    def __init__(self, customer=None, return_url=None, configuration=None,
+                 locale=None, on_behalf_of=None, flow_data=None, **kwargs):
+        if kwargs:
+            raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+
+        try:
+            assert type(customer) is str and customer.startswith('cus_')
+            if return_url is not None:
+                assert type(return_url) is str and return_url
+            if configuration is not None:
+                assert type(configuration) is str and configuration
+            if locale is not None:
+                assert type(locale) is str and locale
+            if on_behalf_of is not None:
+                assert type(on_behalf_of) is str and on_behalf_of
+            if flow_data is not None:
+                assert type(flow_data) is dict
+        except AssertionError:
+            raise UserError(400, 'Bad request')
+
+        Customer._api_retrieve(customer)
+
+        # All exceptions must be raised before this point.
+        super().__init__()
+
+        self.customer = customer
+        self.return_url = return_url
+        self.configuration = configuration
+        self.locale = locale
+        self.on_behalf_of = on_behalf_of
+        self.flow = flow_data
+        self.livemode = False
+        self.url = 'https://billing.localstripe.test/p/session/' + self.id
+
+    def _export(self, expand=None):
+        obj = super()._export(expand=expand)
+        obj['object'] = 'billing_portal.session'
+        return obj
+
+
 class Coupon(StripeObject):
     object = 'coupon'
 
