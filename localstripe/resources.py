@@ -687,15 +687,40 @@ extra_apis.append((
 
 
 class CheckoutSession(StripeObject):
+    """A Checkout Session (POST /v1/checkout/sessions).
+
+    ``automatic_tax[enabled]`` and ``allow_promotion_codes`` are accepted and
+    recorded as Stripe records them
+    (https://docs.stripe.com/api/checkout/sessions/create): localstripe
+    computes no tax and has no hosted page offering codes, but a client that
+    asks for them (metacraft-billing always sends ``automatic_tax``) must get
+    a session, not a 400, and a test can read back what was asked for.
+    """
     object = 'checkout/session'
     _id_prefix = 'cs_test_'
 
     def __init__(self, success_url=None, cancel_url=None, mode=None,
                  line_items=None, client_reference_id=None,
                  subscription_data=None, customer=None,
-                 metadata=None, **kwargs):
+                 metadata=None, automatic_tax=None,
+                 allow_promotion_codes=None, **kwargs):
         if kwargs:
             raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+
+        if allow_promotion_codes is not None:
+            allow_promotion_codes = try_convert_to_bool(allow_promotion_codes)
+        automatic_tax_enabled = False
+        try:
+            if automatic_tax is not None:
+                assert type(automatic_tax) is dict
+                assert set(automatic_tax.keys()) <= {'enabled', 'liability'}
+                automatic_tax_enabled = try_convert_to_bool(
+                    automatic_tax.get('enabled', False))
+                assert type(automatic_tax_enabled) is bool
+            if allow_promotion_codes is not None:
+                assert type(allow_promotion_codes) is bool
+        except AssertionError:
+            raise UserError(400, 'Bad request')
 
         try:
             assert type(success_url) is str and success_url
@@ -764,6 +789,9 @@ class CheckoutSession(StripeObject):
         self.subscription_data = subscription_data or {}
         self.payment_status = 'unpaid'
         self.status = 'open'
+        self.automatic_tax = {'enabled': automatic_tax_enabled,
+                              'status': None}
+        self.allow_promotion_codes = allow_promotion_codes
         self.url = 'https://checkout.localstripe.test/pay/' + self.id
         self.line_items = {
             'object': 'list',

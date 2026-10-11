@@ -1295,3 +1295,32 @@ inv=$(curl -sSfg -u $SK: $HOST/v1/subscriptions \
 total=$(curl -sSfg -u $SK: $HOST/v1/invoices/$inv \
         | grep -oP '"total": \K([0-9]+)' )
 [ "$total" -eq 16383 ]
+
+# Checkout Sessions: automatic_tax and allow_promotion_codes are accepted and
+# recorded (metacraft-billing sends both).
+prod=$(curl -sSfg -u $SK: $HOST/v1/products -d name=Checkout \
+       | grep -oE 'prod_\w+' | head -n 1)
+curl -sSfg -u $SK: $HOST/v1/prices -d id=price_checkout_monthly \
+     -d product=$prod -d unit_amount=1900 -d currency=usd \
+     -d recurring[interval]=month
+cs=$(curl -sSfg -u $SK: $HOST/v1/checkout/sessions \
+          -d customer=$cus \
+          -d mode=subscription \
+          -d line_items[0][price]=price_checkout_monthly \
+          -d line_items[0][quantity]=1 \
+          -d success_url=https://example.com/ok \
+          -d cancel_url=https://example.com/cancel \
+          -d automatic_tax[enabled]=true \
+          -d allow_promotion_codes=false)
+echo "$cs" | grep -qE '"enabled": true'
+echo "$cs" | grep -qE '"allow_promotion_codes": false'
+echo "$cs" | grep -qE '"url": "https://checkout.localstripe.test/pay/cs_test_\w+"'
+
+code=$(curl -sg -o /dev/null -w '%{http_code}' -u $SK: $HOST/v1/checkout/sessions \
+            -d customer=$cus \
+            -d mode=subscription \
+            -d line_items[0][price]=price_checkout_monthly \
+            -d success_url=https://example.com/ok \
+            -d cancel_url=https://example.com/cancel \
+            -d automatic_tax[enabled]=maybe)
+[ "$code" -eq 400 ]
