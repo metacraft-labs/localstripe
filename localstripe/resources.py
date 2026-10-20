@@ -4032,7 +4032,8 @@ class Transfer(StripeObject):
         try:
             assert _type(amount) is int and amount > 0
             assert _type(currency) is str and currency
-            assert _type(destination) is str and destination.startswith('acct_')
+            assert (_type(destination) is str and
+                    destination.startswith('acct_'))
             if description is not None:
                 assert _type(description) is str
         except AssertionError:
@@ -4054,50 +4055,119 @@ class Transfer(StripeObject):
 
         schedule_webhook(Event('transfer.created', self))
 
+    @property
+    def reversals(self):
+        return TransferReversal._api_list_for_transfer(self.id)
+
     @classmethod
-    def _api_create_reversal(cls, id, amount=None, **kwargs):
+    def _api_create_reversal(cls, id, amount=None, description=None,
+                             metadata=None, **kwargs):
         if kwargs:
             raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+        return TransferReversal(transfer=id, amount=amount,
+                                description=description, metadata=metadata)
 
-        try:
-            assert _type(id) is str and id.startswith('tr_')
-        except AssertionError:
-            raise UserError(400, 'Bad request')
 
-        obj = cls._api_retrieve(id)
+class TransferReversal(StripeObject):
+    """A stored, parent-scoped Stripe transfer reversal.
 
+    https://docs.stripe.com/api/transfer_reversals/create
+    https://docs.stripe.com/api/transfer_reversals/list
+    """
+    object = 'transfer_reversal'
+    _id_prefix = 'trr_'
+
+    def __init__(self, transfer, amount=None, description=None, metadata=None):
+        parent = Transfer._api_retrieve(transfer)
         amount = try_convert_to_int(amount)
         if amount is None:
-            amount = obj.amount - obj.amount_reversed
+            amount = parent.amount - parent.amount_reversed
+        if metadata in (None, ''):
+            metadata = {}
         try:
             assert _type(amount) is int and amount > 0
-            assert amount <= (obj.amount - obj.amount_reversed)
+            assert amount <= parent.amount - parent.amount_reversed
+            assert description is None or _type(description) is str
+            assert _type(metadata) is dict
+            assert all(_type(k) is str and _type(v) is str
+                       for k, v in metadata.items())
         except AssertionError:
             raise UserError(400, 'Bad request')
 
-        obj.amount_reversed += amount
-        obj.reversed = (obj.amount_reversed == obj.amount)
+        # Validate everything before recording either the reversal or the
+        # transferred balance: a rejected mutation moves no money.
+        super().__init__()
+        self.amount = amount
+        self.currency = parent.currency
+        self.transfer = parent.id
+        self.description = description
+        self.metadata = metadata.copy()
+        self.balance_transaction = None
+        self.destination_payment_refund = None
+        self.source_refund = None
+        parent.amount_reversed += amount
+        parent.reversed = parent.amount_reversed == parent.amount
+        schedule_webhook(Event('transfer.reversed', parent))
 
-        reversal = {
-            'id': 'trr_' + random_id(14),
-            'object': 'transfer_reversal',
-            'amount': amount,
-            'currency': obj.currency,
-            'transfer': obj.id,
-            'created': int(time.time()),
-        }
+    @classmethod
+    def _api_retrieve_for_transfer(cls, id, reversal_id):
+        Transfer._api_retrieve(id)
+        reversal = cls._api_retrieve(reversal_id)
+        if reversal.transfer != id:
+            raise UserError(404, 'Not Found')
+        return reversal
 
-        schedule_webhook(Event('transfer.reversed', obj))
+    @classmethod
+    def _api_list_for_transfer(cls, id, limit=None, starting_after=None,
+                               ending_before=None, **kwargs):
+        if kwargs:
+            raise UserError(400, 'Unexpected ' + ', '.join(kwargs.keys()))
+        Transfer._api_retrieve(id)
+        limit = 10 if limit is None else try_convert_to_int(limit)
+        if _type(limit) is not int or not 1 <= limit <= 100:
+            raise UserError(400, 'Bad request')
+        if starting_after is not None and ending_before is not None:
+            raise UserError(400, 'Conflicting pagination cursors')
+        rows = [value for key, value in reversed(list(store.items()))
+                if key.startswith(cls.object + ':') and value.transfer == id]
+        # Reversals are newest first. Cursors must name a reversal of this
+        # transfer, so another parent's cursor cannot broaden the lookup.
+        cursor = (starting_after if starting_after is not None
+                  else ending_before)
+        position = None
+        if cursor is not None:
+            for index, reversal in enumerate(rows):
+                if reversal.id == cursor:
+                    position = index
+                    break
+            if position is None:
+                raise UserError(400, 'Invalid pagination cursor')
+        result = TransferReversalList('/v1/transfers/' + id + '/reversals',
+                                      limit=limit)
+        if ending_before is not None:
+            result._list = rows[max(0, position - limit):position]
+            result._previous_more = position > limit
+        else:
+            result._list = rows[0 if position is None else position + 1:]
+        return result
 
-        # Return a simple object wrapper for _export
-        class TransferReversal:
-            def _export(self, expand=None):
-                return reversal
-        return TransferReversal()
+
+class TransferReversalList(List):
+    _previous_more = None
+
+    @property
+    def has_more(self):
+        if self._previous_more is not None:
+            return self._previous_more
+        return super().has_more
 
 
-extra_apis.append(
-    ('POST', '/v1/transfers/{id}/reversals', Transfer._api_create_reversal))
+extra_apis.extend((
+    ('POST', '/v1/transfers/{id}/reversals', Transfer._api_create_reversal),
+    ('GET', '/v1/transfers/{id}/reversals',
+     TransferReversal._api_list_for_transfer),
+    ('GET', '/v1/transfers/{id}/reversals/{reversal_id}',
+     TransferReversal._api_retrieve_for_transfer)))
 
 
 class PromotionCode(StripeObject):
